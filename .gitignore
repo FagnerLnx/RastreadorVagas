@@ -1,0 +1,12 @@
+# Ambiente Virtual
+venv/
+__pycache__/
+*.pyc
+
+# Banco de Dados e Logs (Dados locais não vão para nuvem)
+*.db
+*.log
+*.sqlite
+
+# Arquivos de sistema
+.DS_Store
