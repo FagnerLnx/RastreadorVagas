@@ -220,7 +220,7 @@ def exportar_html():
     print(f"  Arquivo : {caminho}")
     print(f"  Vagas   : {total}  |  VIP: {vip_count}")
     print(f"\n  Abra no navegador:")
-    print(f"  xdg-open {HTML_FILE}\n")
+    print(f"  xdg-open {caminho}\n")
 
 
 # ================================================================
