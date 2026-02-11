@@ -238,6 +238,7 @@ def buscar_no_indeed(page, cargo):
 # PLATAFORMA 2 — GUPY
 # URL: portal.gupy.io
 # Usado por: Scania, Mercedes-Benz, VW, grandes indústrias do ABC
+# FIX: SPA React — precisa de networkidle para renderizar os cards
 # ================================================================
 def buscar_no_gupy(page, cargo):
     plataforma = "Gupy"
@@ -250,23 +251,32 @@ def buscar_no_gupy(page, cargo):
 
     vagas = []
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(random.uniform(3, 5))
+        # Gupy é SPA React — usa load + networkidle para aguardar renderização
+        page.goto(url, wait_until="load", timeout=45000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except Exception:
+            pass  # timeout de networkidle é ok; continua
+        time.sleep(random.uniform(2, 4))
         fechar_popups(page)
 
-        # Gupy é React — aguarda os cards renderizarem
+        # Seletores do Gupy (estrutura Styled Components + data-testid)
         SELETORES_CARD = [
             '[data-testid="job-card"]',
+            'li[data-testid*="job"]',
+            'div[data-testid*="job"]',
+            'a[data-testid*="job-card"]',
             'div[class*="JobCard"]',
             'li[class*="JobCard"]',
-            'article[class*="job"]',
+            'div[class*="sc-"][class*="job"]',
         ]
         seletor_usado = None
         for sel in SELETORES_CARD:
             try:
-                page.wait_for_selector(sel, timeout=8000)
-                seletor_usado = sel
-                break
+                page.wait_for_selector(sel, timeout=6000)
+                if page.locator(sel).count() > 0:
+                    seletor_usado = sel
+                    break
             except Exception:
                 pass
 
@@ -277,14 +287,41 @@ def buscar_no_gupy(page, cargo):
 
         for card in page.locator(seletor_usado).all():
             try:
-                texto = card.inner_text(timeout=2000)
-                linhas = [l.strip() for l in texto.split('\n') if l.strip()]
-                if len(linhas) < 2: continue
+                titulo = ""
+                # Gupy mostra título em h3 ou elemento com data-testid
+                for sel in [
+                    '[data-testid="job-name"]', '[data-testid="job-title"]',
+                    'h3', 'h2', '[class*="jobName"]', '[class*="JobName"]',
+                    '[class*="title"]',
+                ]:
+                    try:
+                        el = card.locator(sel).first
+                        if el.count():
+                            t = el.inner_text(timeout=1500).strip()
+                            if t and len(t) > 3: titulo = t; break
+                    except Exception: pass
 
-                titulo  = linhas[0]
-                empresa = linhas[1] if len(linhas) > 1 else "Não informada"
+                if not titulo:
+                    # Fallback: primeira linha do texto do card
+                    texto_card = card.inner_text(timeout=2000)
+                    linhas = [l.strip() for l in texto_card.split('\n') if l.strip()]
+                    if linhas: titulo = linhas[0]
 
-                # Tenta pegar link direto da vaga
+                if not titulo: continue
+
+                empresa = "Não informada"
+                for sel in [
+                    '[data-testid="company-name"]', '[data-testid="job-company"]',
+                    '[class*="companyName"]', '[class*="CompanyName"]',
+                    '[class*="company"]', 'span[class*="sc-"]',
+                ]:
+                    try:
+                        el = card.locator(sel).first
+                        if el.count():
+                            t = el.inner_text(timeout=1500).strip()
+                            if t and t != titulo: empresa = t; break
+                    except Exception: pass
+
                 link = url
                 try:
                     el = card.locator('a').first
@@ -294,6 +331,7 @@ def buscar_no_gupy(page, cargo):
                             link = f"https://portal.gupy.io{href}" if href.startswith("/") else href
                 except Exception: pass
 
+                texto = card.inner_text(timeout=2000)
                 vagas.append({
                     'id':         montar_id(titulo, empresa, plataforma),
                     'titulo':     titulo,
@@ -316,16 +354,21 @@ def buscar_no_gupy(page, cargo):
 # PLATAFORMA 3 — VAGAS.COM
 # URL: vagas.com.br
 # Forte cobertura regional — Grande ABC Paulista
+# FIX: Usar URL de busca com filtro de cidade + checar relevância do título
 # ================================================================
 def buscar_no_vagas(page, cargo):
     plataforma = "Vagas.com"
 
-    # Vagas.com usa slug no path: "analista-de-logistica"
-    slug_cargo = urllib.parse.quote(cargo.lower().replace(" ", "-"))
-    slug_cidade = "sao-bernardo-do-campo"
-
-    url = f"https://www.vagas.com.br/vagas-de-{slug_cargo}-em-{slug_cidade}"
+    # URL de busca com parâmetros (mais preciso que slug)
+    url = (
+        "https://www.vagas.com.br/vagas-de-"
+        + cargo.lower().replace(" ", "-")
+        + "?filtro_cidade=S%C3%A3o+Bernardo+do+Campo"
+    )
     log(f"   [{plataforma}] {cargo}")
+
+    # Palavras-chave do cargo para filtrar resultados irrelevantes
+    palavras_cargo = [w.lower() for w in cargo.split() if len(w) > 3]
 
     vagas = []
     try:
@@ -337,19 +380,19 @@ def buscar_no_vagas(page, cargo):
         try:
             page.wait_for_selector(SELETOR, timeout=10000)
         except Exception:
-            # Tenta seletor alternativo
             SELETOR = '.opportunity'
             try:
                 page.wait_for_selector(SELETOR, timeout=5000)
             except Exception:
                 log(f"   [{plataforma}] ⚠️ Sem cards — salvando debug")
-                salvar_debug_html(page, f"debug_vagascom.html")
+                salvar_debug_html(page, "debug_vagascom.html")
                 return []
 
         for card in page.locator(SELETOR).all():
             try:
                 titulo = ""
-                for sel in ['h2.cargo a', 'a.link-detalhes-vaga', 'h2 a', '.cargo a']:
+                # Vagas.com: título está no h2.cargo (o texto do link ou direto)
+                for sel in ['h2.cargo a', 'h2.cargo', 'a.link-detalhes-vaga', 'h2 a']:
                     try:
                         el = card.locator(sel).first
                         if el.count():
@@ -358,8 +401,14 @@ def buscar_no_vagas(page, cargo):
                     except Exception: pass
                 if not titulo: continue
 
-                empresa = "Não informada"
-                for sel in ['span.empresa', '.empresa', '[class*="empresa"]']:
+                # Filtra resultados que não têm relação com o cargo buscado
+                titulo_lower = titulo.lower()
+                if palavras_cargo and not any(p in titulo_lower for p in palavras_cargo):
+                    continue
+
+                empresa = "Confidencial"
+                # Vagas.com: empresa em span.empresa — muitas vezes "Nome Confidencial"
+                for sel in ['span.empresa', 'a.empresa', '.empresa', '[class*="empresa"]']:
                     try:
                         el = card.locator(sel).first
                         if el.count():
@@ -377,13 +426,15 @@ def buscar_no_vagas(page, cargo):
                     except Exception: pass
 
                 link = url
-                try:
-                    el = card.locator('a').first
-                    if el.count():
-                        href = el.get_attribute("href", timeout=1500)
-                        if href:
-                            link = f"https://www.vagas.com.br{href}" if href.startswith("/") else href
-                except Exception: pass
+                for sel in ['h2.cargo a', 'a.link-detalhes-vaga', 'a']:
+                    try:
+                        el = card.locator(sel).first
+                        if el.count():
+                            href = el.get_attribute("href", timeout=1500)
+                            if href:
+                                link = f"https://www.vagas.com.br{href}" if href.startswith("/") else href
+                                break
+                    except Exception: pass
 
                 texto = card.inner_text(timeout=2000)
                 vagas.append({
@@ -407,22 +458,26 @@ def buscar_no_vagas(page, cargo):
 # ================================================================
 # PLATAFORMA 4 — CATHO
 # URL: catho.com.br
-# Uma das maiores plataformas de empregos do Brasil
+# FIX: timeout aumentado para 60s + networkidle + seletores ampliados
+# Nota: Catho tem anti-bot pesado; se bloquear consistentemente, desativar
 # ================================================================
 def buscar_no_catho(page, cargo):
     plataforma = "Catho"
     url = (
         "https://www.catho.com.br/vagas/"
         f"?q={urllib.parse.quote(cargo)}"
-        f"&l={urllib.parse.quote(CIDADE_UF)}"
-        "&periodo=7"
+        f"&l={urllib.parse.quote(CIDADE)}"
     )
     log(f"   [{plataforma}] {cargo}")
 
     vagas = []
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(random.uniform(3, 5))
+        page.goto(url, wait_until="load", timeout=60000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        time.sleep(random.uniform(4, 7))
         fechar_popups(page)
 
         SELETORES_CARD = [
@@ -430,19 +485,21 @@ def buscar_no_catho(page, cargo):
             'article[class*="JobCard"]',
             'div[class*="JobCard"]',
             'li[class*="job-item"]',
-            '.sc-job-listing',
+            'div[class*="job-card"]',
+            '[class*="sc-"][class*="Card"]',
         ]
         seletor_usado = None
         for sel in SELETORES_CARD:
             try:
                 page.wait_for_selector(sel, timeout=8000)
-                seletor_usado = sel
-                break
+                if page.locator(sel).count() > 0:
+                    seletor_usado = sel
+                    break
             except Exception:
                 pass
 
         if not seletor_usado:
-            log(f"   [{plataforma}] ⚠️ Sem cards (pode precisar de login) — salvando debug")
+            log(f"   [{plataforma}] ⚠️ Sem cards — salvando debug")
             salvar_debug_html(page, f"debug_{plataforma.lower()}.html")
             return []
 
@@ -450,8 +507,8 @@ def buscar_no_catho(page, cargo):
             try:
                 titulo = ""
                 for sel in [
-                    '[data-testid="job-title"]', 'h2 a', 'h3 a',
-                    '[class*="title"] a', '[class*="Title"] a'
+                    '[data-testid="job-title"]', 'h2 a', 'h3 a', 'h2', 'h3',
+                    '[class*="title"]', '[class*="Title"]',
                 ]:
                     try:
                         el = card.locator(sel).first
@@ -510,14 +567,138 @@ def buscar_no_catho(page, cargo):
 # ================================================================
 # PLATAFORMA 5 — INFOJOBS
 # URL: infojobs.com.br
+# FIX: URL corrigida — InfoJobs BR usa /empregos/ (sem .aspx no path atual)
 # ================================================================
 def buscar_no_infojobs(page, cargo):
     plataforma = "InfoJobs"
 
-    # InfoJobs usa slug no path
     slug = cargo.lower().replace(" ", "-")
-    cidade_slug = "sao-bernardo-do-campo-sp"
-    url = f"https://www.infojobs.com.br/vagas-de-emprego-{slug}-em-{cidade_slug}.aspx"
+    # Tenta URL principal; se não funcionar usa URL alternativa de busca
+    url_principal  = f"https://www.infojobs.com.br/empregos-de-{slug}/sao-bernardo-do-campo,sao-paulo.aspx"
+    url_alternativa = (
+        "https://www.infojobs.com.br/jobsearch/search-results/list.xhtml"
+        f"?keyword={urllib.parse.quote(cargo)}&province=sao-paulo"
+        "&normalizedProvince=sao-paulo&city=sao-bernardo-do-campo"
+        "&normalizedCity=sao-bernardo-do-campo"
+    )
+    log(f"   [{plataforma}] {cargo}")
+
+    vagas = []
+    for url in [url_principal, url_alternativa]:
+        try:
+            page.goto(url, wait_until="load", timeout=40000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=12000)
+            except Exception:
+                pass
+            time.sleep(random.uniform(2, 4))
+            fechar_popups(page)
+
+            SELETORES_CARD = [
+                'li.ij-OfferCardBasic',
+                'li[class*="OfferCard"]',
+                'li[class*="offer"]',
+                'div[class*="OfferCard"]',
+                '.boxVaga',
+                'li.boxVaga',
+                '[class*="offer-item"]',
+            ]
+            seletor_usado = None
+            for sel in SELETORES_CARD:
+                try:
+                    page.wait_for_selector(sel, timeout=6000)
+                    if page.locator(sel).count() > 0:
+                        seletor_usado = sel
+                        break
+                except Exception:
+                    pass
+
+            if seletor_usado:
+                break  # Encontrou cards, sai do loop de URLs
+        except Exception as e:
+            log(f"   [{plataforma}] ⚠️ URL falhou: {e}")
+            continue
+
+    if not seletor_usado:
+        log(f"   [{plataforma}] ⚠️ Sem cards — salvando debug")
+        salvar_debug_html(page, f"debug_{plataforma.lower()}.html")
+        return []
+
+    for card in page.locator(seletor_usado).all():
+        try:
+            titulo = ""
+            for sel in [
+                'h2 a', 'h3 a', 'a[class*="Title"]', 'a[class*="title"]',
+                '[class*="title"] a', '[class*="tituloVaga"] a',
+                '.tituloVaga a', '.ic1_titulo a',
+            ]:
+                try:
+                    el = card.locator(sel).first
+                    if el.count():
+                        titulo = el.inner_text(timeout=1500).strip()
+                        if titulo: break
+                except Exception: pass
+            if not titulo: continue
+
+            empresa = "Não informada"
+            for sel in [
+                '[class*="company"]', '[class*="Company"]',
+                '[class*="empresa"]', '.nomeEmpresa', 'span[class*="Employer"]',
+            ]:
+                try:
+                    el = card.locator(sel).first
+                    if el.count():
+                        t = el.inner_text(timeout=1500).strip()
+                        if t: empresa = t; break
+                except Exception: pass
+
+            local_vaga = CIDADE_UF
+            for sel in ['[class*="location"]', '[class*="cidade"]', '[class*="city"]', '.localVaga']:
+                try:
+                    el = card.locator(sel).first
+                    if el.count():
+                        t = el.inner_text(timeout=1500).strip()
+                        if t: local_vaga = t; break
+                except Exception: pass
+
+            link = url
+            try:
+                el = card.locator('a').first
+                if el.count():
+                    href = el.get_attribute("href", timeout=1500)
+                    if href:
+                        link = f"https://www.infojobs.com.br{href}" if href.startswith("/") else href
+            except Exception: pass
+
+            texto = card.inner_text(timeout=2000)
+            vagas.append({
+                'id':         montar_id(titulo, empresa, plataforma),
+                'titulo':     titulo,
+                'empresa':    empresa,
+                'local':      local_vaga,
+                'link':       link,
+                'plataforma': plataforma,
+                'match_vip':  checar_vip(texto)
+            })
+        except Exception:
+            continue
+
+    log(f"   [{plataforma}] {len(vagas)} vagas encontradas")
+    return vagas
+
+
+# ================================================================
+# PLATAFORMA 6 — SINE
+# URL: sine.com.br
+# FIX: URL corrigida — empregabrasil.mte.gov.br não resolve mais
+# ================================================================
+def buscar_no_sine(page, cargo):
+    plataforma = "SINE"
+    slug_cargo  = cargo.lower().replace(" ", "-")
+    url = (
+        f"https://www.sine.com.br/vagas-emprego-em-sao-bernardo-do-campo-sp"
+        f"/{slug_cargo}"
+    )
     log(f"   [{plataforma}] {cargo}")
 
     vagas = []
@@ -526,19 +707,20 @@ def buscar_no_infojobs(page, cargo):
         time.sleep(random.uniform(2, 4))
         fechar_popups(page)
 
+        # sine.com.br usa cards com classe .vaga-lista ou similar
         SELETORES_CARD = [
-            'li[class*="offer"]',
-            'li.offer-list-item',
-            'article[class*="offer"]',
-            '[class*="offer-item"]',
-            '.vaga-item',
+            'li.vaga-lista', 'li[class*="vaga"]',
+            'div[class*="vaga-item"]', 'article[class*="vaga"]',
+            '.resultado-vaga', 'li.resultado',
+            '.vaga',
         ]
         seletor_usado = None
         for sel in SELETORES_CARD:
             try:
                 page.wait_for_selector(sel, timeout=8000)
-                seletor_usado = sel
-                break
+                if page.locator(sel).count() > 0:
+                    seletor_usado = sel
+                    break
             except Exception:
                 pass
 
@@ -550,17 +732,22 @@ def buscar_no_infojobs(page, cargo):
         for card in page.locator(seletor_usado).all():
             try:
                 titulo = ""
-                for sel in ['h2 a', 'h3 a', '[class*="title"] a', 'a[class*="Title"]']:
+                for sel in ['h2 a', 'h3 a', 'a[class*="title"]', 'a[class*="cargo"]', 'a']:
                     try:
                         el = card.locator(sel).first
                         if el.count():
-                            titulo = el.inner_text(timeout=1500).strip()
-                            if titulo: break
+                            t = el.inner_text(timeout=1500).strip()
+                            if t and len(t) > 3: titulo = t; break
                     except Exception: pass
+
+                if not titulo:
+                    texto_card = card.inner_text(timeout=2000)
+                    linhas = [l.strip() for l in texto_card.split('\n') if l.strip()]
+                    if linhas: titulo = linhas[0]
                 if not titulo: continue
 
                 empresa = "Não informada"
-                for sel in ['[class*="company"]', '[class*="empresa"]', 'span[class*="Company"]']:
+                for sel in ['[class*="empresa"]', '[class*="company"]', 'span[class*="nome"]']:
                     try:
                         el = card.locator(sel).first
                         if el.count():
@@ -568,97 +755,13 @@ def buscar_no_infojobs(page, cargo):
                             if t: empresa = t; break
                     except Exception: pass
 
-                local_vaga = CIDADE_UF
-                for sel in ['[class*="location"]', '[class*="localidade"]', '[class*="city"]']:
-                    try:
-                        el = card.locator(sel).first
-                        if el.count():
-                            t = el.inner_text(timeout=1500).strip()
-                            if t: local_vaga = t; break
-                    except Exception: pass
-
                 link = url
                 try:
                     el = card.locator('a').first
                     if el.count():
                         href = el.get_attribute("href", timeout=1500)
                         if href:
-                            link = f"https://www.infojobs.com.br{href}" if href.startswith("/") else href
-                except Exception: pass
-
-                texto = card.inner_text(timeout=2000)
-                vagas.append({
-                    'id':         montar_id(titulo, empresa, plataforma),
-                    'titulo':     titulo,
-                    'empresa':    empresa,
-                    'local':      local_vaga,
-                    'link':       link,
-                    'plataforma': plataforma,
-                    'match_vip':  checar_vip(texto)
-                })
-            except Exception:
-                continue
-    except Exception as e:
-        log(f"   [{plataforma}] ❌ Erro: {e}")
-
-    log(f"   [{plataforma}] {len(vagas)} vagas encontradas")
-    return vagas
-
-
-# ================================================================
-# PLATAFORMA 6 — SINE / EMPREGA BRASIL
-# URL: empregabrasil.mte.gov.br
-# Portal do Governo Federal — vagas formais registradas
-# ================================================================
-def buscar_no_sine(page, cargo):
-    plataforma = "SINE"
-    url = (
-        "https://www.empregabrasil.mte.gov.br/76/procurar-emprego/"
-        f"?q={urllib.parse.quote(cargo)}"
-        "&municipio=sao-bernardo-do-campo&uf=SP"
-    )
-    log(f"   [{plataforma}] {cargo}")
-
-    vagas = []
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(random.uniform(2, 4))
-        fechar_popups(page)
-
-        SELETORES_CARD = [
-            '.vaga', 'li.resultado', 'div[class*="vaga"]',
-            'article[class*="vaga"]', 'tr[class*="vaga"]',
-        ]
-        seletor_usado = None
-        for sel in SELETORES_CARD:
-            try:
-                page.wait_for_selector(sel, timeout=8000)
-                seletor_usado = sel
-                break
-            except Exception:
-                pass
-
-        if not seletor_usado:
-            log(f"   [{plataforma}] ⚠️ Sem cards — salvando debug")
-            salvar_debug_html(page, f"debug_{plataforma.lower()}.html")
-            return []
-
-        for card in page.locator(seletor_usado).all():
-            try:
-                texto = card.inner_text(timeout=2000)
-                linhas = [l.strip() for l in texto.split('\n') if l.strip()]
-                if len(linhas) < 2: continue
-
-                titulo  = linhas[0]
-                empresa = linhas[1] if len(linhas) > 1 else "Não informada"
-
-                link = url
-                try:
-                    el = card.locator('a').first
-                    if el.count():
-                        href = el.get_attribute("href", timeout=1500)
-                        if href:
-                            link = f"https://www.empregabrasil.mte.gov.br{href}" if href.startswith("/") else href
+                            link = f"https://www.sine.com.br{href}" if href.startswith("/") else href
                 except Exception: pass
 
                 vagas.append({
