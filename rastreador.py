@@ -27,11 +27,20 @@ LOG_FILE        = "execucao.log"
 MAX_VAGAS_CARGO = 8   # máximo de vagas novas por cargo por plataforma
 
 # Palavras que marcam a vaga como VIP 🔥
+# Não incluir os próprios cargos buscados (estoque, inventário, PCP, almoxarifado)
+# pois toda busca desses cargos teria o termo no texto — inflando o VIP.
+# VIP = grandes empresas da região + metodologias premium + ferramentas de mercado.
 KEYWORDS_VIP = [
+    # Metodologias / ferramentas
     "JIT", "Lean", "Kaizen", "WMS", "SAP", "ERP",
-    "Automotiva", "Scania", "Ford", "Volkswagen", "Mercedes",
-    "Kanban", "FIFO", "5S", "inventário", "estoque",
-    "Supply Chain", "PCP", "almoxarifado"
+    "Kanban", "FIFO", "5S", "MRP", "S&OP",
+    # Grandes empregadores do ABC Paulista
+    "Scania", "Ford", "Volkswagen", "Mercedes", "MAN",
+    "Toyota", "Honda", "Stellantis", "Bosch", "3M",
+    "Johnson", "Unilever", "Ambev", "Gerdau",
+    # Segmentos premium para o perfil
+    "Automotiva", "Automobilística", "Supply Chain",
+    "ABC Paulista", "São Bernardo do Campo",
 ]
 
 # ================================================================
@@ -503,11 +512,20 @@ def buscar_no_catho(page, cargo):
             salvar_debug_html(page, f"debug_{plataforma.lower()}.html")
             return []
 
+        # Prefixos que indicam página editorial, não vaga real
+        CATHO_EDITORIAL = (
+            "o que o ", "vagas relacionadas", "empregos de ",
+            "o que faz", "salário de ", "como ser ",
+        )
+
         for card in page.locator(seletor_usado).all():
             try:
                 titulo = ""
                 for sel in [
-                    '[data-testid="job-title"]', 'h2 a', 'h3 a', 'h2', 'h3',
+                    '[data-testid="job-title"]',
+                    'h2[class*="Title"] a', 'h3[class*="Title"] a',
+                    'h2 a', 'h3 a', 'h2', 'h3',
+                    'a[class*="title"]', 'a[class*="Title"]',
                     '[class*="title"]', '[class*="Title"]',
                 ]:
                     try:
@@ -517,6 +535,10 @@ def buscar_no_catho(page, cargo):
                             if titulo: break
                     except Exception: pass
                 if not titulo: continue
+
+                # Ignora páginas editoriais do Catho (não são vagas reais)
+                if any(titulo.lower().startswith(p) for p in CATHO_EDITORIAL):
+                    continue
 
                 empresa = "Não informada"
                 for sel in ['[data-testid="company-name"]', '[class*="company"]', '[class*="Company"]']:
@@ -764,6 +786,7 @@ def buscar_no_sine(page, cargo):
                             link = f"https://www.sine.com.br{href}" if href.startswith("/") else href
                 except Exception: pass
 
+                texto = card.inner_text(timeout=2000)
                 vagas.append({
                     'id':         montar_id(titulo, empresa, plataforma),
                     'titulo':     titulo,
@@ -794,7 +817,7 @@ PLATAFORMAS = [
     buscar_no_vagas,
     buscar_no_catho,
     buscar_no_infojobs,
-    buscar_no_sine,
+    # buscar_no_sine,  # ← desativado: sine.com.br fora do ar (ERR_NAME_NOT_RESOLVED)
 ]
 
 
